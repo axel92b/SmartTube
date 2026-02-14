@@ -75,6 +75,7 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
     private long mLastUpdateTimeMs = -1;
     private int mBootSectionIndex;
     private int mBootstrapSectionId = -1;
+    private String mTargetVideoIdForSelection;
 
     private BrowsePresenter(Context context) {
         super(context);
@@ -476,6 +477,16 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
         saveSelectedItems(); // save previous state
         mCurrentSection = findSectionById(sectionId);
         mCurrentVideo = null; // fast scroll through the sections (fix empty selected item)
+        
+        // Clear target video selection if we're not on subscriptions section
+        if (mTargetVideoIdForSelection != null && !isSubscriptionsSection()) {
+            mTargetVideoIdForSelection = null;
+            // Hide loading spinner if user navigated away during search
+            if (getView() != null) {
+                getView().showProgressBar(false);
+            }
+        }
+        
         updateCurrentSection();
         restoreSelectedItems(); // Don't place anywhere else
     }
@@ -767,7 +778,11 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
         Disposable updateAction = group
                 .subscribe(
                         mediaGroup -> {
-                            getView().showProgressBar(false);
+                            // Don't hide progress bar yet if we're searching for a video
+                            boolean isSearchingForVideo = mTargetVideoIdForSelection != null && isSubscriptionsSection();
+                            if (!isSearchingForVideo) {
+                                getView().showProgressBar(false);
+                            }
 
                             if (getView() == null) {
                                 Log.e(TAG, "Browse view has been unloaded from the memory. Low RAM?");
@@ -779,7 +794,17 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
                             appendLocalHistory(videoGroup);
                             getView().updateSection(videoGroup);
                             mBrowseProcessor.process(videoGroup);
-
+                
+                            // Check if we need to scroll to a specific video after loading subscriptions
+                            if (mTargetVideoIdForSelection != null && isSubscriptionsSection()) {
+                                // Show spinner now that content is loaded and we're starting the search
+                                if (getView() != null) {
+                                    getView().showProgressBar(true);
+                                    Log.d(TAG, "updateVideoGrid: Showing spinner for video search");
+                                }
+                                selectVideoByIdIfFound(videoGroup, mTargetVideoIdForSelection);
+                            }
+                
                             continueGroupIfNeeded(videoGroup);
                         },
                         error -> {
@@ -832,12 +857,21 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
         Disposable continueAction = continuation
                 .subscribe(
                         continueGroup -> {
-                            getView().showProgressBar(false);
+                            // Don't hide progress bar if we're still searching for a video
+                            boolean isSearchingForVideo = mTargetVideoIdForSelection != null && isSubscriptionsSection();
+                            if (!isSearchingForVideo) {
+                                getView().showProgressBar(false);
+                            }
 
                             VideoGroup videoGroup = VideoGroup.from(group, continueGroup);
                             getView().updateSection(videoGroup);
                             mBrowseProcessor.process(videoGroup);
-
+                
+                            // Check if we need to scroll to a specific video in continued content
+                            if (mTargetVideoIdForSelection != null && isSubscriptionsSection()) {
+                                selectVideoByIdIfFound(videoGroup, mTargetVideoIdForSelection);
+                            }
+                
                             continueGroupIfNeeded(videoGroup, showLoading);
                         },
                         error -> {
@@ -1099,6 +1133,111 @@ public class BrowsePresenter extends BasePresenter<BrowseView> implements Sectio
 
     public boolean inForeground() {
         return getViewManager().getTopView() == BrowseView.class;
+    }
+
+    public void openSubscriptionsAtVideo(String videoId) {
+        if (videoId == null) {
+            return;
+        }
+
+        // Store current position preference state to restore later
+        boolean originalRememberPosition = getGeneralData().isRememberSubscriptionsPositionEnabled();
+        
+        // Temporarily disable position remembering to avoid conflicts
+        if (originalRememberPosition) {
+            getGeneralData().setRememberSubscriptionsPositionEnabled(false);
+        }
+
+        // Store the target video ID for later selection
+        mTargetVideoIdForSelection = videoId;
+        Log.d(TAG, "openSubscriptionsAtVideo: Set target videoId=" + videoId);
+
+        // Navigate to subscriptions section
+        selectSection(MediaGroup.TYPE_SUBSCRIPTIONS);
+
+        // Don't show spinner here - it will be shown after content loads in updateVideoGrid
+        // The normal section loading will show/hide its own spinner first
+
+        // Restore original position preference after navigation
+        if (originalRememberPosition) {
+            // Use a delayed post to restore after section loads
+            Utils.postDelayed(() -> {
+                getGeneralData().setRememberSubscriptionsPositionEnabled(true);
+            }, 2000);
+        }
+    }
+
+    /**
+     * Find and select a video by videoId within the given VideoGroup.
+     * If not found, continue loading more content until found.
+     */
+    private void selectVideoByIdIfFound(VideoGroup videoGroup, String targetVideoId) {
+        if (videoGroup == null || videoGroup.getVideos() == null || targetVideoId == null) {
+            Log.d(TAG, "selectVideoByIdIfFound: Early return - videoGroup=" + videoGroup + ", targetVideoId=" + targetVideoId);
+            return;
+        }
+
+        Log.d(TAG, "selectVideoByIdIfFound: Searching for videoId=" + targetVideoId + " in group with " + videoGroup.getSize() + " videos");
+        Video foundVideo = videoGroup.findVideoById(targetVideoId);
+        if (foundVideo != null && getView() != null) {
+            Log.d(TAG, "selectVideoByIdIfFound: Found video! Title=" + foundVideo.getTitle());
+            // Clear the target ID since we found and will select the video
+            mTargetVideoIdForSelection = null;
+            
+            // Hide loading spinner since we found the video
+            getView().showProgressBar(false);
+            
+            // Use a small delay to ensure the view is fully updated
+            Utils.postDelayed(() -> {
+                if (getView() != null) {
+                    Log.d(TAG, "selectVideoByIdIfFound: Selecting video in view");
+                    getView().selectSectionItem(foundVideo);
+                }
+            }, 100);
+        } else {
+            Log.d(TAG, "selectVideoByIdIfFound: Video not found, continuing search...");
+            // Video not found in current content, try to load more
+            continueSearchingForVideo(videoGroup);
+        }
+    }
+
+    /**
+     * Continue loading more content in subscriptions to search for the target video
+     */
+    private void continueSearchingForVideo(VideoGroup videoGroup) {
+        if (mTargetVideoIdForSelection == null || !isSubscriptionsSection() || videoGroup == null) {
+            Log.d(TAG, "continueSearchingForVideo: Early return - targetId=" + mTargetVideoIdForSelection + ", isSubscriptions=" + isSubscriptionsSection());
+            return;
+        }
+
+        // Check if there's more content to load
+        String nextPageKey = videoGroup.getMediaGroup() != null ? videoGroup.getMediaGroup().getNextPageKey() : null;
+        Log.d(TAG, "continueSearchingForVideo: nextPageKey=" + nextPageKey + ", groupSize=" + videoGroup.getSize());
+        
+        if (nextPageKey != null) {
+            getView().showProgressBar(true);
+            // Get the last video to trigger loading more content
+            if (!videoGroup.isEmpty()) {
+                Video lastVideo = videoGroup.get(videoGroup.getSize() - 1);
+                Log.d(TAG, "continueSearchingForVideo: Triggering load more content with lastVideo=" + lastVideo.getTitle());
+                // Trigger loading more content by calling onScrollEnd
+                Utils.postDelayed(() -> {
+                    if (mTargetVideoIdForSelection != null && isSubscriptionsSection()) {
+                        Log.d(TAG, "continueSearchingForVideo: Calling onScrollEnd");
+                        onScrollEnd(lastVideo);
+                    }
+                }, 200);
+            }
+        } else {
+            Log.d(TAG, "continueSearchingForVideo: No more content to load, video not found");
+            // No more content to load, video not found
+            mTargetVideoIdForSelection = null;
+            
+            // Hide loading spinner since search is complete
+            if (getView() != null) {
+                getView().showProgressBar(false);
+            }
+        }
     }
 
     private boolean isGridSection() {
