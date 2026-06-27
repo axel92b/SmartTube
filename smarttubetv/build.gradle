@@ -106,6 +106,7 @@ android {
             // minifyEnabled true
 
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
 
             if (keystorePropertiesFile.exists()) {
                 signingConfig signingConfigs.release
@@ -213,11 +214,11 @@ dependencies {
 
     testImplementation 'junit:junit:' + junitVersion
     testImplementation 'org.robolectric:robolectric:' + robolectricVersion
-    androidTestImplementation 'androidx.test.ext:junit:' + testXSupportVersion
-    androidTestImplementation 'androidx.test.ext:truth:' + testXSupportVersion
-    androidTestImplementation 'androidx.test:runner:' + testXSupportVersion
-    androidTestImplementation 'androidx.test:rules:' + testXSupportVersion
-    androidTestImplementation 'androidx.test.espresso:espresso-core:' + espressoVersion
+    //androidTestImplementation 'androidx.test.ext:junit:' + testXSupportVersion
+    //androidTestImplementation 'androidx.test.ext:truth:' + testXSupportVersion
+    //androidTestImplementation 'androidx.test:runner:' + testXSupportVersion
+    //androidTestImplementation 'androidx.test:rules:' + testXSupportVersion
+    //androidTestImplementation 'androidx.test.espresso:espresso-core:' + espressoVersion
 
     implementation project(':fragment-1.1.0')
     implementation project(':leanback-1.0.0')
